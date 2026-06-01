@@ -1,0 +1,26 @@
+{
+  "name": "dotdigital-api",
+  "version": "1.0.0",
+  "description": "Node integration starter for Dotdigital Insight Data services",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"No tests configured yet\"",
+    "test:connection": "node src/scripts/testConnection.js",
+    "list:insightdata": "node src/scripts/listInsightCollections.js",
+    "create:insightdata": "node src/scripts/createInsightCollection.js",
+    "delete:insightdata": "node src/scripts/deleteInsightCollection.js",
+    "create:insightdata:csv": "node src/scripts/createInsightCollectionsFromCsv.js",
+    "import:insightdata:csv": "node src/scripts/importInsightDataFromCsv.js",
+    "sync:datafields": "node src/scripts/syncContactDataFields.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.16.1",
+    "csv-parse": "^5.6.0",
+    "dotenv": "^17.4.2"
+  }
+}
