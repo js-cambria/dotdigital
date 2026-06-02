@@ -12,7 +12,17 @@
     "delete:insightdata": "node src/scripts/deleteInsightCollection.js",
     "create:insightdata:csv": "node src/scripts/createInsightCollectionsFromCsv.js",
     "import:insightdata:csv": "node src/scripts/importInsightDataFromCsv.js",
-    "sync:datafields": "node src/scripts/syncContactDataFields.js"
+    "import:test:contact": "node src/scripts/importTestContactFromSchema.js",
+    "import:test:contact:apply": "node src/scripts/importTestContactFromSchema.js --apply",
+    "import:test:vehicle": "node src/scripts/importTestVehicleInsightRecord.js",
+    "import:test:vehicle:apply": "node src/scripts/importTestVehicleInsightRecord.js --apply",
+    "import:vehiclemarketingevents": "node src/scripts/importVehicleMarketingEventsRecord.js",
+    "import:test:vehiclemarketingevents": "node src/scripts/importTestVehicleMarketingEventsRecord.js",
+    "import:test:vehiclemarketingevents:apply": "node src/scripts/importTestVehicleMarketingEventsRecord.js --apply",
+    "sync:schema:vehicledates": "node src/scripts/syncVehicleDatesSchema.js",
+    "sync:schema:vehicledates:apply": "node src/scripts/syncVehicleDatesSchema.js --apply",
+    "sync:datafields": "node src/scripts/syncContactDataFields.js",
+    "sync:datafields:apply": "node src/scripts/syncContactDataFields.js --apply"
   },
   "keywords": [],
   "author": "",

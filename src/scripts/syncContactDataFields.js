@@ -8,21 +8,91 @@ const DOTDIGITAL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,20}$/;
 const DEFAULT_SCHEMA_PATH = "data/insight/schemas/dd_Customers_schema.csv";
 const DEFAULT_ALIAS_PATH = "data/insight/schemas/contactDataFieldAliases.json";
 const DEFAULT_TRACKER_PATH = "data/insight/datafields/contactDataFields.sync-log.json";
+const MIN_SIMILARITY_SCORE = 0.7;
+const MAX_SIMILAR_MATCHES = 3;
+const DEFAULT_CREATE_RETRIES = 3;
+const DEFAULT_RETRY_DELAY_MS = 400;
 
 function getArgs() {
   const args = process.argv.slice(2);
   const apply = args.includes("--apply");
   const positionalArgs = args.filter((arg) => !arg.startsWith("--"));
+  const retryArg = args.find((arg) => arg.startsWith("--retries="));
+  const retryDelayArg = args.find((arg) => arg.startsWith("--retry-delay-ms="));
   const csvPathArg = positionalArgs[0] || DEFAULT_SCHEMA_PATH;
   const aliasPathArg = positionalArgs[1] || DEFAULT_ALIAS_PATH;
   const trackerPathArg = positionalArgs[2] || DEFAULT_TRACKER_PATH;
+
+  const retries = retryArg ? Number(retryArg.split("=")[1]) : DEFAULT_CREATE_RETRIES;
+  const retryDelayMs = retryDelayArg ? Number(retryDelayArg.split("=")[1]) : DEFAULT_RETRY_DELAY_MS;
 
   return {
     apply,
     csvPath: path.resolve(csvPathArg),
     aliasPath: path.resolve(aliasPathArg),
-    trackerPath: path.resolve(trackerPathArg)
+    trackerPath: path.resolve(trackerPathArg),
+    retries: Number.isFinite(retries) && retries >= 0 ? retries : DEFAULT_CREATE_RETRIES,
+    retryDelayMs:
+      Number.isFinite(retryDelayMs) && retryDelayMs >= 0 ? retryDelayMs : DEFAULT_RETRY_DELAY_MS
   };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function getApiStatusCode(error) {
+  const match = String(error?.message || "").match(/Dotdigital API error \((\d{3})\)/);
+
+  if (!match) {
+    return null;
+  }
+
+  return Number(match[1]);
+}
+
+function isRetryableStatus(status) {
+  if (!status) {
+    return false;
+  }
+
+  return status === 401 || status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
+async function createFieldWithRetry(client, row, retries, retryDelayMs) {
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt <= retries) {
+    try {
+      await client.post("/data-fields", {
+        name: row.name,
+        type: row.dotdigitalType,
+        visibility: "Private"
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      const status = getApiStatusCode(error);
+      const canRetry = isRetryableStatus(status) && attempt < retries;
+
+      if (!canRetry) {
+        throw error;
+      }
+
+      const delayMs = retryDelayMs * (attempt + 1);
+      console.log(
+        `Retrying create for ${row.name} after API ${status}. Attempt ${attempt + 2}/${retries + 1} in ${delayMs}ms.`
+      );
+      await sleep(delayMs);
+    }
+
+    attempt += 1;
+  }
+
+  throw lastError;
 }
 
 function mapSqlTypeToDotdigital(sqlType) {
@@ -119,6 +189,109 @@ function indexExistingFields(fields) {
   return map;
 }
 
+function normalizeForSimilarity(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function getBigrams(value) {
+  if (value.length < 2) {
+    return [];
+  }
+
+  const grams = [];
+
+  for (let i = 0; i < value.length - 1; i += 1) {
+    grams.push(value.slice(i, i + 2));
+  }
+
+  return grams;
+}
+
+function diceCoefficient(left, right) {
+  if (!left || !right) {
+    return 0;
+  }
+
+  if (left === right) {
+    return 1;
+  }
+
+  const leftBigrams = getBigrams(left);
+  const rightBigrams = getBigrams(right);
+
+  if (leftBigrams.length === 0 || rightBigrams.length === 0) {
+    return 0;
+  }
+
+  const rightCounts = new Map();
+  for (const gram of rightBigrams) {
+    rightCounts.set(gram, (rightCounts.get(gram) || 0) + 1);
+  }
+
+  let overlap = 0;
+  for (const gram of leftBigrams) {
+    const count = rightCounts.get(gram) || 0;
+    if (count > 0) {
+      overlap += 1;
+      rightCounts.set(gram, count - 1);
+    }
+  }
+
+  return (2 * overlap) / (leftBigrams.length + rightBigrams.length);
+}
+
+function calculateNameSimilarity(targetName, existingName) {
+  const target = normalizeForSimilarity(targetName);
+  const existing = normalizeForSimilarity(existingName);
+
+  if (!target || !existing) {
+    return 0;
+  }
+
+  if (target === existing) {
+    return 1;
+  }
+
+  if (target.includes(existing) || existing.includes(target)) {
+    const shorter = Math.min(target.length, existing.length);
+    const longer = Math.max(target.length, existing.length);
+    return Math.max(0.7, shorter / longer);
+  }
+
+  const sharedPrefixLength = target
+    .split("")
+    .findIndex((char, index) => char !== existing[index]);
+  const prefixLength = sharedPrefixLength === -1 ? Math.min(target.length, existing.length) : sharedPrefixLength;
+  const prefixBoost = Math.min(prefixLength, 4) * 0.03;
+
+  return Math.min(1, diceCoefficient(target, existing) + prefixBoost);
+}
+
+function findSimilarExistingFields(targetName, existingFields) {
+  const candidates = [];
+
+  for (const field of existingFields) {
+    const score = calculateNameSimilarity(targetName, field.name);
+
+    if (score < MIN_SIMILARITY_SCORE) {
+      continue;
+    }
+
+    candidates.push({
+      name: field.name,
+      type: field.type,
+      visibility: field.visibility,
+      score
+    });
+  }
+
+  return candidates
+    .sort((left, right) => right.score - left.score)
+    .slice(0, MAX_SIMILAR_MATCHES);
+}
+
 function toTrackerField(row, extras = {}) {
   return {
     line: row.line,
@@ -141,7 +314,7 @@ function appendTrackerRun(trackerPath, runRecord) {
 }
 
 async function syncContactDataFields() {
-  const { apply, csvPath, aliasPath, trackerPath } = getArgs();
+  const { apply, csvPath, aliasPath, trackerPath, retries, retryDelayMs } = getArgs();
   const env = loadEnv();
 
   const client = new DotdigitalClient({
@@ -205,6 +378,7 @@ async function syncContactDataFields() {
       aliasCount: aliasRows.length,
       matchingCount: matchedRows.length,
       missingCount: missingRows.length,
+        similarMatchCount: 0,
       mismatchCount: mismatchRows.length,
       invalidCount: invalidRows.length,
       unsupportedTypeCount: unsupportedTypeRows.length,
@@ -236,16 +410,39 @@ async function syncContactDataFields() {
         reason: `Unsupported SQL type ${row.sqlType}`
       })
     ),
+    similarExistingFields: [],
     createdFields: []
   };
+
+  const similarRows = missingRows
+    .map((row) => ({
+      row,
+      matches: findSimilarExistingFields(row.name, existingFields)
+    }))
+    .filter((entry) => entry.matches.length > 0);
+
+  runRecord.summary.similarMatchCount = similarRows.length;
+  runRecord.similarExistingFields = similarRows.map((entry) =>
+    toTrackerField(entry.row, {
+      similarMatches: entry.matches.map((match) => ({
+        name: match.name,
+        type: match.type,
+        visibility: match.visibility,
+        score: Number(match.score.toFixed(2))
+      }))
+    })
+  );
 
   console.log(`Schema file: ${csvPath}`);
   console.log(`Alias file: ${aliasPath}`);
   console.log(`Tracker file: ${trackerPath}`);
+  console.log(`Create retries per field: ${retries}`);
+  console.log(`Retry delay (ms): ${retryDelayMs}`);
   console.log(`Existing Dotdigital data fields: ${existingFields.length}`);
   console.log(`Aliased fields: ${aliasRows.length}`);
   console.log(`Matching fields: ${matchedRows.length}`);
   console.log(`Missing fields: ${missingRows.length}`);
+  console.log(`Missing fields with similar existing IDs: ${similarRows.length}`);
   console.log(`Type mismatches: ${mismatchRows.length}`);
   console.log(`Invalid names: ${invalidRows.length}`);
   console.log(`Unsupported SQL types: ${unsupportedTypeRows.length}`);
@@ -262,6 +459,18 @@ async function syncContactDataFields() {
     for (const row of missingRows) {
       const aliasSuffix = row.aliasApplied ? ` [from ${row.sourceName}]` : "";
       console.log(`- ${row.name} => ${row.dotdigitalType}${aliasSuffix}`);
+    }
+  }
+
+  if (similarRows.length > 0) {
+    console.log("Potentially similar existing Dotdigital field IDs:");
+    for (const entry of similarRows) {
+      console.log(`- ${entry.row.name} (from ${entry.row.sourceName}):`);
+      for (const match of entry.matches) {
+        console.log(
+          `  -> ${match.name} | type=${match.type} | visibility=${match.visibility} | similarity=${match.score.toFixed(2)}`
+        );
+      }
     }
   }
 
@@ -300,11 +509,7 @@ async function syncContactDataFields() {
 
   try {
     for (const row of missingRows) {
-      await client.post("/data-fields", {
-        name: row.name,
-        type: row.dotdigitalType,
-        visibility: "Private"
-      });
+      await createFieldWithRetry(client, row, retries, retryDelayMs);
 
       runRecord.createdFields.push(
         toTrackerField(row, {
@@ -317,7 +522,11 @@ async function syncContactDataFields() {
     }
   } catch (error) {
     runRecord.error = error.message;
+    runRecord.summary.remainingCount = missingRows.length - runRecord.summary.createdCount;
     appendTrackerRun(trackerPath, runRecord);
+    console.log(
+      `Partial completion: created ${runRecord.summary.createdCount}/${missingRows.length}. Re-run with --apply to resume missing fields.`
+    );
     throw error;
   }
 

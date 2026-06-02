@@ -1,0 +1,12 @@
+﻿Vehicle_Calendar_KEY,nvarchar,36,NULL,NULL,NULL,NO
+Event_Date,varchar,10,NULL,NULL,NULL,YES
+CRM_Vehicle_KEY,nvarchar,36,NULL,NULL,NULL,YES
+Organisation_Structure_KEY,nvarchar,36,NULL,NULL,NULL,YES
+Last_Amended_User_KEY,nvarchar,36,NULL,NULL,NULL,YES
+Event_Type,nvarchar,50,NULL,NULL,NULL,YES
+Allow_Reminder,nvarchar,3,NULL,NULL,NULL,YES
+Description,nvarchar,1000,NULL,NULL,NULL,YES
+Has_Workshop_Booking,nvarchar,3,NULL,NULL,NULL,YES
+Customer_Key,nvarchar,36,NULL,NULL,NULL,YES
+Created_Date,varchar,10,NULL,NULL,NULL,YES
+Amended_Date,varchar,10,NULL,NULL,NULL,YES
